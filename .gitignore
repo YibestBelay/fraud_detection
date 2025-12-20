@@ -1,23 +1,26 @@
 # Data
 data/
 models/
+*.pkl
+*.joblib
+*.h5
 
 # IDE
 .vscode/
-*.ipynb_checkpoints/
+.idea/
+*.swp
+*.swo
 
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.so
 .Python
-env/
 my_env/
 venv/
-*.egg-info/
-dist/
-build/
+.env
+.venv
 
-# OS
-.DS_Store
-Thumbs.db
+# Jupyter
+.ipynb_checkpoints/

@@ -9,6 +9,12 @@ class FraudDataPreprocessor:
         self.df = pd.read_csv(data_path)
         self.original_shape = self.df.shape
         
+        # Standardize critical ID columns as strings immediately
+        id_cols = ['user_id', 'device_id']
+        for col in id_cols:
+            if col in self.df.columns:
+                self.df[col] = self.df[col].astype(str)
+        
     def clean_data(self):
         """Execute complete cleaning pipeline"""
         self._convert_dtypes()
@@ -18,73 +24,63 @@ class FraudDataPreprocessor:
         return self.df
     
     def _convert_dtypes(self):
-        """Convert columns to correct data types with justification"""
-        # Time columns - critical for time-based features
-        self.df['signup_time'] = pd.to_datetime(
-            self.df['signup_time'], errors='coerce'
-        )
-        self.df['purchase_time'] = pd.to_datetime(
-            self.df['purchase_time'], errors='coerce'
-        )
+        """Convert columns to correct data types"""
+        # Time columns
+        self.df['signup_time'] = pd.to_datetime(self.df['signup_time'], errors='coerce')
+        self.df['purchase_time'] = pd.to_datetime(self.df['purchase_time'], errors='coerce')
         
-        # Categorical columns
-        categorical_cols = ['source', 'browser', 'sex', 'device_id']
-        self.df[categorical_cols] = self.df[categorical_cols].astype('category')
-        
-        # Numerical columns
-        self.df['purchase_value'] = pd.to_numeric(
-            self.df['purchase_value'], errors='coerce'
-        )
+        # Numerical
+        self.df['purchase_value'] = pd.to_numeric(self.df['purchase_value'], errors='coerce')
         self.df['age'] = pd.to_numeric(self.df['age'], errors='coerce')
         
-        print("✓ Data types converted: datetime for times, category for strings, numeric for values")
+        # Categorical-like (as string, not category)
+        for col in ['source', 'browser', 'sex', 'ip_address']:
+            if col in self.df.columns:
+                self.df[col] = self.df[col].astype(str)
+        
+        print("✓ Data types converted: datetime, numeric, and string (not categorical)")
     
     def _handle_missing_values(self):
-        """Impute or drop missing values with strategic justification"""
+        """Handle missing values"""
         missing_report = self.df.isnull().sum()
-        print(f"Missing values before treatment:\n{missing_report[missing_report > 0]}")
+        if missing_report.sum() > 0:
+            print(f"Missing values before treatment:\n{missing_report[missing_report > 0]}")
         
-        # Strategy 1: Drop time records if critical timestamps are missing
+        # Drop rows with missing critical timestamps
         time_mask = self.df[['signup_time', 'purchase_time']].isnull().any(axis=1)
         self.df = self.df[~time_mask].copy()
         
-        # Strategy 2: Impute numerical with median (robust to outliers)
-        self.df['purchase_value'].fillna(
-            self.df['purchase_value'].median(), inplace=True
-        )
-        
-        # Strategy 3: Impute age with mode (most common age group)
+        # Numerical imputation
+        self.df['purchase_value'].fillna(self.df['purchase_value'].median(), inplace=True)
         self.df['age'].fillna(self.df['age'].mode()[0], inplace=True)
         
-        # Strategy 4: For categorical, use 'Unknown' category
-        self.df['source'].fillna('Unknown', inplace=True)
-        self.df['browser'].fillna('Unknown', inplace=True)
+        # Categorical: replace 'nan' string and fill
+        for col in ['source', 'browser', 'sex', 'ip_address']:
+            if col in self.df.columns:
+                self.df[col].replace('nan', 'Unknown', inplace=True)
+                self.df[col].fillna('Unknown', inplace=True)
         
-        print("✓ Missing values handled: times dropped, numerics imputed, categoricals labeled")
+        print("✓ Missing values handled")
     
     def _remove_duplicates(self):
-        """Remove exact and near-duplicates"""
-        initial_count = len(self.df)
-        
-        # Remove exact duplicates across all columns
+        """Remove duplicates"""
+        initial = len(self.df)
         self.df.drop_duplicates(inplace=True)
         
-        # Remove suspicious transaction duplicates
-        # Same user, same device, same value within 1 minute
-        self.df.sort_values(['user_id', 'purchase_time'], inplace=True)
-        duplicate_mask = (
-            self.df.duplicated(
-                subset=['user_id', 'device_id', 'purchase_value'], keep='first'
-            ) & 
-            (self.df['purchase_time'].diff().dt.total_seconds().abs() < 60)
+        # Near-duplicates: same user/device/value within 60 sec
+        self.df.sort_values(['user_id', 'purchase_time'], inplace=True, ignore_index=True)
+        time_diff = self.df.groupby('user_id')['purchase_time'].diff().dt.total_seconds()
+        near_dup = (
+            self.df.duplicated(subset=['user_id', 'device_id', 'purchase_value'], keep='first') &
+            (time_diff < 60)
         )
-        self.df = self.df[~duplicate_mask].reset_index(drop=True)
+        self.df = self.df[~near_dup].reset_index(drop=True)
         
-        removed = initial_count - len(self.df)
-        print(f"✓ Duplicates removed: {removed} records ({removed/initial_count:.1%})")
+        removed = initial - len(self.df)
+        print(f"✓ Duplicates removed: {removed} records ({removed/initial:.1%})")
     
     def _validate_cleaning(self):
-        """Validate cleaning operations"""
+        """Validation report"""
         print("\n" + "="*50)
         print("CLEANING VALIDATION REPORT")
         print("="*50)
