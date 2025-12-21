@@ -94,7 +94,8 @@ def main():
     processed_data = transformer.preprocess_data(
         X_train, X_test, y_train, y_test,
         feature_types,
-        balance_strategy='smote'  
+        # balance_strategy='smote'  
+        balance_strategy=None
     )
     
     # Save processed data
