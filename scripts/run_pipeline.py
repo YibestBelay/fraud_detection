@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """
 Main execution script for fraud detection pipeline.
-Memory-efficient and production-ready.
+Memory-efficient and production-ready using sparse matrices.
 """
 import pandas as pd
 from src.data_transformation import DataTransformer
@@ -31,28 +31,46 @@ def main():
     X_train, X_test, y_train, y_test = transformer.split_data(df)
 
     # ----------------------------
-    # 5. Preprocess data
+    # 5. Preprocess data (sparse-friendly)
     # ----------------------------
-    results = transformer.preprocess_data(
-        X_train, X_test, y_train, y_test,
-        feature_types=feature_types,
-        balance_strategy='smote'  # or 'undersample' / 'combined'
+    print("\n=== STARTING PREPROCESSING ===")
+    preprocessor = transformer.create_preprocessing_pipeline(feature_types)
+
+    # Fit-transform training data
+    X_train_processed = preprocessor.fit_transform(X_train)
+    # Transform test data
+    X_test_processed = preprocessor.transform(X_test)
+
+    # Handle class imbalance on training data
+    X_train_bal, y_train_bal, sampler = transformer.handle_class_imbalance(
+        X_train_processed, y_train, strategy='smote'
     )
 
     # ----------------------------
-    # 6. Save processed data (optional)
+    # 6. Convert to DataFrame safely
     # ----------------------------
-    results['X_train_balanced'].to_csv("data/processed/X_train_balanced.csv", index=False)
-    results['y_train_balanced'].to_csv("data/processed/y_train_balanced.csv", index=False)
-    results['X_test'].to_csv("data/processed/X_test.csv", index=False)
-    results['y_test'].to_csv("data/processed/y_test.csv", index=False)
+    feature_names = transformer.get_feature_names(preprocessor)
+
+    # Use sparse DataFrames for memory efficiency
+    X_train_bal_df = pd.DataFrame.sparse.from_spmatrix(X_train_bal, columns=feature_names)
+    X_test_df = pd.DataFrame.sparse.from_spmatrix(X_test_processed, columns=feature_names)
+    X_train_df = pd.DataFrame.sparse.from_spmatrix(X_train_processed, columns=feature_names)
+
+    # ----------------------------
+    # 7. Save processed data
+    # ----------------------------
+    X_train_bal_df.to_csv("data/processed/X_train_balanced.csv", index=False)
+    y_train_bal.to_csv("data/processed/y_train_balanced.csv", index=False)
+    X_test_df.to_csv("data/processed/X_test.csv", index=False)
+    y_test.to_csv("data/processed/y_test.csv", index=False)
 
     print("\n=== PIPELINE COMPLETE ===")
-    print(f"Training shape (balanced): {results['X_train_balanced'].shape}")
-    print(f"Test shape: {results['X_test'].shape}")
+    print(f"Training shape (balanced): {X_train_bal_df.shape}")
+    print(f"Test shape: {X_test_df.shape}")
 
 if __name__ == "__main__":
     main()
+
 
 # import sys
 # import os

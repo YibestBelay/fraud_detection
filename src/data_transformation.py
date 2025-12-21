@@ -1,6 +1,6 @@
 """
 Data transformation and preprocessing pipeline.
-Handles non-numeric columns automatically and is production-ready.
+Memory-efficient and production-ready.
 """
 import pandas as pd
 import numpy as np
@@ -13,145 +13,142 @@ from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
 from imblearn.pipeline import Pipeline as ImbPipeline
 import warnings
+
 warnings.filterwarnings('ignore')
 
 
 class DataTransformer:
     """Transform and preprocess data for modeling."""
 
-    def __init__(self, target_col: str = 'class', test_size: float = 0.2, random_state: int = 42):
+    def __init__(self, target_col='class', test_size=0.2, random_state=42, sample_frac=0.3):
+        """
+        sample_frac: fraction of data to use for memory efficiency (0 < sample_frac <= 1)
+        """
         self.target_col = target_col
         self.test_size = test_size
         self.random_state = random_state
         self.preprocessor = None
         self.feature_names = None
+        self.sample_frac = sample_frac
 
     def identify_feature_types(self, df: pd.DataFrame) -> dict:
-        """Identify numerical and categorical features, ignoring any non-compatible columns."""
-        exclude_cols = [self.target_col, 'user_id', 'device_id', 'signup_time', 'purchase_time', 'ip_address']
-        feature_df = df.drop(columns=[col for col in exclude_cols if col in df.columns])
+        """Identify numerical and categorical features."""
+        exclude_cols = [self.target_col, 'user_id', 'device_id', 'signup_time',
+                        'purchase_time', 'ip_address']
 
-        numerical_features = feature_df.select_dtypes(include=[np.number]).columns.tolist()
-        categorical_features = feature_df.select_dtypes(include=['category', 'object']).columns.tolist()
+        feature_df = df.drop(columns=[c for c in exclude_cols if c in df.columns])
+
+        numerical_features = feature_df.select_dtypes(include=['int16', 'int32', 'int64',
+                                                               'float16', 'float32', 'float64']).columns.tolist()
+        categorical_features = feature_df.select_dtypes(include=['object', 'category']).columns.tolist()
 
         print("=== FEATURE IDENTIFICATION ===")
         print(f"Numerical features ({len(numerical_features)}): {numerical_features}")
         print(f"Categorical features ({len(categorical_features)}): {categorical_features}")
         print(f"Total features: {len(numerical_features) + len(categorical_features)}")
 
-        return {
-            'numerical': numerical_features,
-            'categorical': categorical_features,
-            'all': numerical_features + categorical_features
-        }
+        return {'numerical': numerical_features, 'categorical': categorical_features, 'all': numerical_features + categorical_features}
 
     def create_preprocessing_pipeline(self, feature_types: dict) -> ColumnTransformer:
-        """Create preprocessing pipeline."""
+        """Create preprocessing pipeline for different feature types."""
+        # Numerical pipeline
         num_pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='median')),
             ('scaler', StandardScaler())
         ])
+
+        # Categorical pipeline (sparse for memory efficiency)
         cat_pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=True))
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse=True))
         ])
 
-        preprocessor = ColumnTransformer(transformers=[
+        preprocessor = ColumnTransformer([
             ('num', num_pipeline, feature_types['numerical']),
             ('cat', cat_pipeline, feature_types['categorical'])
-        ], remainder='drop')  # drop any leftover non-numeric/non-categorical
+        ])
 
         self.preprocessor = preprocessor
         return preprocessor
 
-    def split_data(self, df: pd.DataFrame):
-        """Split data into train/test sets."""
+    def split_data(self, df: pd.DataFrame) -> tuple:
+        """Split data into train/test with optional subsampling."""
+        # Subsample for memory efficiency
+        if self.sample_frac < 1.0:
+            df = df.sample(frac=self.sample_frac, random_state=self.random_state)
+
         X = df.drop(columns=[self.target_col])
         y = df[self.target_col]
 
         self.feature_names = X.columns.tolist()
 
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=self.test_size, random_state=self.random_state, stratify=y, shuffle=True
+            X, y, test_size=self.test_size, stratify=y, shuffle=True, random_state=self.random_state
         )
 
         print(f"Training samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
         return X_train, X_test, y_train, y_test
 
     def handle_class_imbalance(self, X_train, y_train, strategy='smote'):
-        """Handle class imbalance safely."""
-        print(f"=== HANDLING CLASS IMBALANCE ({strategy.upper()}) ===")
+        """Balance classes with SMOTE or undersampling."""
+        print(f"\n=== HANDLING CLASS IMBALANCE ({strategy.upper()}) ===")
+        print("BEFORE resampling:", y_train.value_counts().to_dict())
 
         if strategy == 'smote':
             sampler = SMOTE(random_state=self.random_state)
         elif strategy == 'undersample':
             sampler = RandomUnderSampler(random_state=self.random_state)
         elif strategy == 'combined':
-            sampler = ImbPipeline([
-                ('over', SMOTE(sampling_strategy=0.5, random_state=self.random_state)),
-                ('under', RandomUnderSampler(sampling_strategy=0.8, random_state=self.random_state))
-            ])
+            over = SMOTE(sampling_strategy=0.5, random_state=self.random_state)
+            under = RandomUnderSampler(sampling_strategy=0.8, random_state=self.random_state)
+            sampler = ImbPipeline([('over', over), ('under', under)])
         else:
-            raise ValueError(f"Unknown balance strategy: {strategy}")
+            raise ValueError("Invalid strategy")
 
-        # Convert to numeric only if needed
-        X_train_safe = X_train.select_dtypes(include=[np.number, 'category', 'object'])
-        X_res, y_res = sampler.fit_resample(X_train_safe, y_train)
+        # Only resample if dataset is small enough
+        X_res, y_res = sampler.fit_resample(X_train, y_train)
+        print("AFTER resampling:", y_res.value_counts().to_dict())
 
         return X_res, y_res, sampler
 
-    def preprocess_data(self, X_train, X_test, y_train, y_test, feature_types: dict, balance_strategy='smote'):
+    def preprocess_data(self, X_train, X_test, y_train, y_test, feature_types, balance_strategy='smote'):
         """Full preprocessing pipeline."""
         print("=== STARTING PREPROCESSING ===")
-
         preprocessor = self.create_preprocessing_pipeline(feature_types)
 
-        # Fit & transform
+        print("Fitting preprocessing pipeline on training data...")
         X_train_processed = preprocessor.fit_transform(X_train)
+
+        print("Transforming test data...")
         X_test_processed = preprocessor.transform(X_test)
 
-        # Handle imbalance safely
-        X_train_bal, y_train_bal, sampler = self.handle_class_imbalance(
-            pd.DataFrame(X_train_processed, columns=self.get_feature_names(preprocessor)),
-            y_train,
-            strategy=balance_strategy
-        )
+        # Balance classes only on training
+        X_train_balanced, y_train_balanced, sampler = self.handle_class_imbalance(X_train_processed, y_train, strategy=balance_strategy)
 
-        feature_names_out = self.get_feature_names(preprocessor)
-
-        results = {
-            'X_train': pd.DataFrame(X_train_processed, columns=feature_names_out, index=X_train.index),
-            'X_test': pd.DataFrame(X_test_processed, columns=feature_names_out, index=X_test.index),
+        return {
+            'X_train': X_train_processed,
+            'X_test': X_test_processed,
             'y_train': y_train,
             'y_test': y_test,
-            'X_train_balanced': pd.DataFrame(X_train_bal, columns=feature_names_out),
-            'y_train_balanced': y_train_bal,
+            'X_train_balanced': X_train_balanced,
+            'y_train_balanced': y_train_balanced,
             'preprocessor': preprocessor,
-            'sampler': sampler,
-            'feature_names': feature_names_out
+            'sampler': sampler
         }
 
-        print(f"Processed training shape: {results['X_train'].shape}")
-        print(f"Balanced training shape: {results['X_train_balanced'].shape}")
-        print(f"Processed test shape: {results['X_test'].shape}")
-
-        return results
-
-    def get_feature_names(self, preprocessor: ColumnTransformer):
-        """Get all feature names after preprocessing."""
+    def get_feature_names(self, preprocessor):
+        """Get output feature names."""
         feature_names = []
-
-        for name, transformer, columns in preprocessor.transformers_:
+        for name, transformer, cols in preprocessor.transformers_:
             if transformer == 'drop':
                 continue
             if hasattr(transformer, 'get_feature_names_out'):
                 if name == 'cat':
-                    feature_names.extend(transformer.named_steps['onehot'].get_feature_names_out(columns))
+                    feature_names.extend(transformer.named_steps['onehot'].get_feature_names_out(cols))
                 else:
-                    feature_names.extend(columns)
+                    feature_names.extend(cols)
             else:
-                feature_names.extend(columns)
-
+                feature_names.extend(cols)
         return feature_names
 
 # """
