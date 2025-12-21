@@ -118,7 +118,7 @@ Installation
 
 # Clone repo
 
-git clone https://github.com/yourusername/fraud-detection.git
+git clone https://github.com/Saronzeleke/fraud-detection-week5.git
 
 cd fraud-detection
 
