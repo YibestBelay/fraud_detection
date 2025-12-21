@@ -1,3 +1,150 @@
+# """
+# Data transformation and class imbalance handling.
+# Fully aligned with run_pipeline.py
+# Optimized for low RAM (8GB, Windows).
+# """
+
+# import pandas as pd
+# import numpy as np
+
+# from sklearn.model_selection import train_test_split
+# from sklearn.preprocessing import StandardScaler, OneHotEncoder
+# from sklearn.impute import SimpleImputer
+# from imblearn.over_sampling import SMOTE
+
+
+# class DataTransformer:
+#     def __init__(self, target_col, test_size=0.2, random_state=42):
+#         self.target_col = target_col
+#         self.test_size = test_size
+#         self.random_state = random_state
+
+#     # --------------------------------------------------
+#     # 1. Identify feature types
+#     # --------------------------------------------------
+#     def identify_feature_types(self, df):
+#         numeric_features = df.select_dtypes(
+#             include=["int64", "float64"]
+#         ).columns.tolist()
+
+#         categorical_features = df.select_dtypes(
+#             include=["object", "category"]
+#         ).columns.tolist()
+
+#         # Remove target from features
+#         if self.target_col in numeric_features:
+#             numeric_features.remove(self.target_col)
+
+#         return {
+#             "numeric": numeric_features,
+#             "categorical": categorical_features
+#         }
+
+#     # --------------------------------------------------
+#     # 2. Train / test split
+#     # --------------------------------------------------
+#     def split_data(self, df):
+#         X = df.drop(columns=[self.target_col])
+#         y = df[self.target_col]
+
+#         return train_test_split(
+#             X, y,
+#             test_size=self.test_size,
+#             stratify=y,
+#             random_state=self.random_state
+#         )
+
+#     # --------------------------------------------------
+#     # 3. Preprocessing + imbalance handling
+#     # --------------------------------------------------
+#     def preprocess_data(
+#         self,
+#         X_train,
+#         X_test,
+#         y_train,
+#         y_test,
+#         feature_types,
+#         balance_strategy=None
+#     ):
+#         num_features = feature_types["numeric"]
+#         cat_features = feature_types["categorical"]
+
+#         # -------- NUMERIC --------
+#         num_imputer = SimpleImputer(strategy="median")
+#         scaler = StandardScaler()
+
+#         X_train_num = num_imputer.fit_transform(X_train[num_features])
+#         X_test_num = num_imputer.transform(X_test[num_features])
+
+#         X_train_num = scaler.fit_transform(X_train_num)
+#         X_test_num = scaler.transform(X_test_num)
+
+#         # -------- CATEGORICAL --------
+#         cat_imputer = SimpleImputer(strategy="most_frequent")
+#         encoder = OneHotEncoder(
+#             handle_unknown="ignore",
+#             sparse=True  # VERY IMPORTANT for RAM
+#         )
+
+#         X_train_cat = cat_imputer.fit_transform(X_train[cat_features])
+#         X_test_cat = cat_imputer.transform(X_test[cat_features])
+
+#         X_train_cat = encoder.fit_transform(X_train_cat)
+#         X_test_cat = encoder.transform(X_test_cat)
+
+#         # -------- COMBINE --------
+#         from scipy.sparse import hstack
+
+#         X_train_final = hstack([X_train_num, X_train_cat])
+#         X_test_final = hstack([X_test_num, X_test_cat])
+
+#         # -------- FEATURE NAMES --------
+#         cat_feature_names = encoder.get_feature_names_out(cat_features)
+#         feature_names = num_features + list(cat_feature_names)
+
+#         # Convert to DataFrame (safe size)
+#         X_train_df = pd.DataFrame(
+#             X_train_final.toarray(),
+#             columns=feature_names
+#         )
+#         X_test_df = pd.DataFrame(
+#             X_test_final.toarray(),
+#             columns=feature_names
+#         )
+
+#         # -------- CLASS IMBALANCE --------
+#         sampler = None
+#         X_train_bal, y_train_bal = X_train_df, y_train
+
+#         print("\nClass distribution BEFORE resampling:")
+#         print(y_train.value_counts(normalize=True))
+
+#         if balance_strategy == "smote":
+#             sampler = SMOTE(random_state=self.random_state)
+#             X_train_bal, y_train_bal = sampler.fit_resample(
+#                 X_train_df, y_train
+#             )
+
+#             print("\nClass distribution AFTER SMOTE:")
+#             print(y_train_bal.value_counts(normalize=True))
+
+#         return {
+#             "X_train": X_train_df,
+#             "X_test": X_test_df,
+#             "y_train": y_train.reset_index(drop=True),
+#             "y_test": y_test.reset_index(drop=True),
+#             "X_train_balanced": X_train_bal,
+#             "y_train_balanced": y_train_bal,
+#             "preprocessor": {
+#                 "num_imputer": num_imputer,
+#                 "scaler": scaler,
+#                 "cat_imputer": cat_imputer,
+#                 "encoder": encoder
+#             },
+#             "sampler": sampler,
+#             "feature_names": feature_names
+#         }
+
 """
 Data transformation and preprocessing pipeline.
 Production-ready with proper train/test separation.
