@@ -24,3 +24,12 @@ venv/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# test informatio 
+.coverage
+.coverage.SaronZeleke.4244.XrAKLqex
+.coverage.SaronZeleke.7260.XaLOETzx
+.coverage.SaronZeleke.12800.XcfNuPFx
+.coverage.SaronZeleke.18024.XXwuUzFx
+.coverage.SaronZeleke.20048.XozePDBx
+.__pycache__/
