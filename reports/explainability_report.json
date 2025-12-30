@@ -1,0 +1,9 @@
+{
+  "insights": {},
+  "summary": {
+    "shap_values_computed": true,
+    "explainer_available": true,
+    "total_features": 88,
+    "analysis_completed": false
+  }
+}

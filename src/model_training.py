@@ -1,7 +1,3 @@
-"""
-Model training and evaluation module for fraud detection.
-"""
-
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -286,33 +282,48 @@ class FraudDetectionModels:
         Select best model based on specified metric.
         
         Args:
-            metric (str): Metric to use for selection
+            metric (str): Metric to use for selection (e.g., 'f1', 'pr_auc')
             
         Returns:
-            tuple: (best_model_name, best_model)
+            tuple: (best_model_display_name, best_model)
         """
         if not self.results:
             print("No results available for model selection.")
             return None, None
-        
-        # Find model with highest metric value
+
+        # Map display names (used in self.results) to internal model keys (used in self.models)
+        display_to_internal = {
+            "Baseline Logistic Regression": "logistic_regression",
+            "Random Forest": "random_forest",
+            "XGBoost": "xgboost"
+        }
+
+        # Find best model by metric
         metric_values = {name: res[metric] for name, res in self.results.items()}
-        best_model_name = max(metric_values, key=metric_values.get)
-        best_model = self.models.get(best_model_name)
+        best_display_name = max(metric_values, key=metric_values.get)
         
+        # Get corresponding internal key
+        internal_key = display_to_internal.get(best_display_name)
+        if internal_key is None:
+            raise KeyError(f"Mapping not found for display name: '{best_display_name}'")
+        
+        best_model = self.models.get(internal_key)
+        if best_model is None:
+            raise RuntimeError(f"Model not found for internal key: '{internal_key}'")
+
         print(f"\n{'='*60}")
         print(f"MODEL SELECTION")
         print(f"{'='*60}")
-        print(f"Best model based on {metric}: {best_model_name}")
-        print(f"{metric} score: {metric_values[best_model_name]:.4f}")
+        print(f"Best model based on {metric}: {best_display_name}")
+        print(f"{metric} score: {metric_values[best_display_name]:.4f}")
         print("\nJustification:")
         print("1. For fraud detection, recall and F1-score are critical")
         print("2. Ensemble models typically perform better on imbalanced data")
         print("3. Consider both performance and interpretability")
         
         self.best_model = best_model
-        return best_model_name, best_model
-    
+        return best_display_name, best_model
+
     def save_model(self, model, filepath):
         """
         Save trained model to disk.
