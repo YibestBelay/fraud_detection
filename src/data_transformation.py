@@ -1,393 +1,539 @@
 """
-Data transformation and preprocessing pipeline.
-Memory-efficient and production-ready.
+Data transformation module for fraud detection.
+Handles normalization, encoding, and imbalanced data treatment.
 """
+
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
-from imblearn.pipeline import Pipeline as ImbPipeline
+from typing import Tuple, List, Dict, Any, Optional
 import warnings
-
 warnings.filterwarnings('ignore')
 
 
-class DataTransformer:
-    """Transform and preprocess data for modeling."""
-
-    def __init__(self, target_col='class', test_size=0.2, random_state=42, sample_frac=0.3):
+class FraudDataTransformer:
+    """
+    Handles data transformation including scaling, encoding, and imbalance handling.
+    """
+    
+    def __init__(self, random_state: int = 42, verbose: bool = True):
         """
-        sample_frac: fraction of data to use for memory efficiency (0 < sample_frac <= 1)
+        Initialize data transformer.
+        
+        Args:
+            random_state (int): Random seed for reproducibility
+            verbose (bool): Whether to print transformation steps
         """
-        self.target_col = target_col
-        self.test_size = test_size
         self.random_state = random_state
-        self.preprocessor = None
-        self.feature_names = None
-        self.sample_frac = sample_frac
-
-    def identify_feature_types(self, df: pd.DataFrame) -> dict:
-        """Identify numerical and categorical features."""
-        exclude_cols = [self.target_col, 'user_id', 'device_id', 'signup_time',
-                        'purchase_time', 'ip_address']
-
-        feature_df = df.drop(columns=[c for c in exclude_cols if c in df.columns])
-
-        numerical_features = feature_df.select_dtypes(include=['int16', 'int32', 'int64',
-                                                               'float16', 'float32', 'float64']).columns.tolist()
-        categorical_features = feature_df.select_dtypes(include=['object', 'category']).columns.tolist()
-
-        print("=== FEATURE IDENTIFICATION ===")
-        print(f"Numerical features ({len(numerical_features)}): {numerical_features}")
-        print(f"Categorical features ({len(categorical_features)}): {categorical_features}")
-        print(f"Total features: {len(numerical_features) + len(categorical_features)}")
-
-        return {'numerical': numerical_features, 'categorical': categorical_features, 'all': numerical_features + categorical_features}
-
-    def create_preprocessing_pipeline(self, feature_types: dict) -> ColumnTransformer:
-        """Create preprocessing pipeline for different feature types."""
-        # Numerical pipeline
-        num_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler())
-        ])
-
-        # Categorical pipeline (sparse for memory efficiency)
-        cat_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse=True))
-        ])
-
-        preprocessor = ColumnTransformer([
-            ('num', num_pipeline, feature_types['numerical']),
-            ('cat', cat_pipeline, feature_types['categorical'])
-        ])
-
-        self.preprocessor = preprocessor
-        return preprocessor
-
-    def split_data(self, df: pd.DataFrame) -> tuple:
-        """Split data into train/test with optional subsampling."""
-        # Subsample for memory efficiency
-        if self.sample_frac < 1.0:
-            df = df.sample(frac=self.sample_frac, random_state=self.random_state)
-
-        X = df.drop(columns=[self.target_col])
-        y = df[self.target_col]
-
-        self.feature_names = X.columns.tolist()
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=self.test_size, stratify=y, shuffle=True, random_state=self.random_state
-        )
-
-        print(f"Training samples: {X_train.shape[0]}, Test samples: {X_test.shape[0]}")
-        return X_train, X_test, y_train, y_test
-
-    def handle_class_imbalance(self, X_train, y_train, strategy='smote'):
-        """Balance classes with SMOTE or undersampling."""
-        print(f"\n=== HANDLING CLASS IMBALANCE ({strategy.upper()}) ===")
-        print("BEFORE resampling:", y_train.value_counts().to_dict())
-
-        if strategy == 'smote':
-            sampler = SMOTE(random_state=self.random_state)
-        elif strategy == 'undersample':
-            sampler = RandomUnderSampler(random_state=self.random_state)
-        elif strategy == 'combined':
-            over = SMOTE(sampling_strategy=0.5, random_state=self.random_state)
-            under = RandomUnderSampler(sampling_strategy=0.8, random_state=self.random_state)
-            sampler = ImbPipeline([('over', over), ('under', under)])
-        else:
-            raise ValueError("Invalid strategy")
-
-        # Only resample if dataset is small enough
-        X_res, y_res = sampler.fit_resample(X_train, y_train)
-        print("AFTER resampling:", y_res.value_counts().to_dict())
-
-        return X_res, y_res, sampler
-
-    def preprocess_data(self, X_train, X_test, y_train, y_test, feature_types, balance_strategy='smote'):
-        """Full preprocessing pipeline."""
-        print("=== STARTING PREPROCESSING ===")
-        preprocessor = self.create_preprocessing_pipeline(feature_types)
-
-        print("Fitting preprocessing pipeline on training data...")
-        X_train_processed = preprocessor.fit_transform(X_train)
-
-        print("Transforming test data...")
-        X_test_processed = preprocessor.transform(X_test)
-
-        # Balance classes only on training
-        X_train_balanced, y_train_balanced, sampler = self.handle_class_imbalance(X_train_processed, y_train, strategy=balance_strategy)
-
-        return {
-            'X_train': X_train_processed,
-            'X_test': X_test_processed,
-            'y_train': y_train,
-            'y_test': y_test,
-            'X_train_balanced': X_train_balanced,
-            'y_train_balanced': y_train_balanced,
-            'preprocessor': preprocessor,
-            'sampler': sampler
-        }
-
-    def get_feature_names(self, preprocessor):
-        """Get output feature names."""
-        feature_names = []
-        for name, transformer, cols in preprocessor.transformers_:
-            if transformer == 'drop':
-                continue
-            if hasattr(transformer, 'get_feature_names_out'):
-                if name == 'cat':
-                    feature_names.extend(transformer.named_steps['onehot'].get_feature_names_out(cols))
-                else:
-                    feature_names.extend(cols)
-            else:
-                feature_names.extend(cols)
-        return feature_names
-
-# """
-# Data transformation and preprocessing pipeline.
-# Production-ready with proper train/test separation.
-# """
-# import pandas as pd
-# import numpy as np
-# from sklearn.model_selection import train_test_split
-# from sklearn.preprocessing import StandardScaler, MinMaxScaler, OneHotEncoder, LabelEncoder
-# from sklearn.compose import ColumnTransformer
-# from sklearn.pipeline import Pipeline
-# from sklearn.impute import SimpleImputer
-# from imblearn.over_sampling import SMOTE
-# from imblearn.under_sampling import RandomUnderSampler
-# from imblearn.pipeline import Pipeline as ImbPipeline
-# import warnings
-# warnings.filterwarnings('ignore')
-
-# class DataTransformer:
-#     """Transform and preprocess data for modeling."""
-    
-#     def __init__(self, target_col: str = 'class', test_size: float = 0.2, random_state: int = 42):
-#         self.target_col = target_col
-#         self.test_size = test_size
-#         self.random_state = random_state
-#         self.preprocessor = None
-#         self.feature_names = None
+        self.verbose = verbose
         
-#     def identify_feature_types(self, df: pd.DataFrame) -> dict:
-#         """Identify numerical and categorical features."""
-#         # Exclude target and non-feature columns
-#         exclude_cols = [self.target_col, 'user_id', 'device_id', 'signup_time', 
-#                        'purchase_time', 'ip_address']
+        # Transformers
+        self.scaler = None
+        self.label_encoders = {}
+        self.onehot_columns = []
+        self.transformation_report = {}
         
-#         feature_df = df.drop(columns=[col for col in exclude_cols if col in df.columns])
+    def split_data(self, df: pd.DataFrame, 
+                   target_col: str = 'class',
+                   test_size: float = 0.2,
+                   stratify: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame, 
+                                                   pd.Series, pd.Series]:
+        """
+        Perform stratified train-test split.
         
-#         # Identify feature types
-#         numerical_features = feature_df.select_dtypes(include=['int64', 'int32', 'int16', 
-#                                                              'float64', 'float32']).columns.tolist()
-        
-#         categorical_features = feature_df.select_dtypes(include=['category', 'object']).columns.tolist()
-        
-#         print("=== FEATURE IDENTIFICATION ===")
-#         print(f"Numerical features ({len(numerical_features)}): {numerical_features}")
-#         print(f"Categorical features ({len(categorical_features)}): {categorical_features}")
-#         print(f"Total features: {len(numerical_features) + len(categorical_features)}")
-        
-#         return {
-#             'numerical': numerical_features,
-#             'categorical': categorical_features,
-#             'all': numerical_features + categorical_features
-#         }
-    
-#     def create_preprocessing_pipeline(self, feature_types: dict) -> ColumnTransformer:
-#         """Create preprocessing pipeline for different feature types."""
-        
-#         # Numerical pipeline
-#         numerical_pipeline = Pipeline([
-#             ('imputer', SimpleImputer(strategy='median')),  # Robust to outliers
-#             ('scaler', StandardScaler())  # Standardize to mean=0, std=1
-#         ])
-        
-#         # Categorical pipeline
-#         categorical_pipeline = Pipeline([
-#             ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
-#             ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-#         ])
-        
-#         # Column transformer
-#         preprocessor = ColumnTransformer([
-#             ('num', numerical_pipeline, feature_types['numerical']),
-#             ('cat', categorical_pipeline, feature_types['categorical'])
-#         ])
-        
-#         self.preprocessor = preprocessor
-#         return preprocessor
-    
-#     def split_data(self, df: pd.DataFrame) -> tuple:
-#         """Split data into train and test sets with stratification."""
-#         X = df.drop(columns=[self.target_col])
-#         y = df[self.target_col]
-        
-#         # Store feature names before preprocessing
-#         self.feature_names = X.columns.tolist()
-        
-#         X_train, X_test, y_train, y_test = train_test_split(
-#             X, y, 
-#             test_size=self.test_size, 
-#             random_state=self.random_state,
-#             stratify=y,  # Maintain class distribution
-#             shuffle=True
-#         )
-        
-#         print("=== DATA SPLITTING ===")
-#         print(f"Training set: {X_train.shape[0]:,} samples")
-#         print(f"Test set: {X_test.shape[0]:,} samples")
-#         print(f"Features: {X_train.shape[1]}")
-#         print(f"\nTraining class distribution:")
-#         print(f"  Non-fraud: {(y_train == 0).sum():,} ({(y_train == 0).mean()*100:.2f}%)")
-#         print(f"  Fraud: {(y_train == 1).sum():,} ({(y_train == 1).mean()*100:.2f}%)")
-        
-#         return X_train, X_test, y_train, y_test
-    
-#     def handle_class_imbalance(self, X_train: pd.DataFrame, y_train: pd.Series, 
-#                              strategy: str = 'smote') -> tuple:
-#         """Handle class imbalance with SMOTE or undersampling."""
-        
-#         print(f"\n=== HANDLING CLASS IMBALANCE ({strategy.upper()}) ===")
-        
-#         # Document BEFORE resampling
-#         print("BEFORE resampling:")
-#         print(f"  Class 0: {(y_train == 0).sum():,} ({(y_train == 0).mean()*100:.2f}%)")
-#         print(f"  Class 1: {(y_train == 1).sum():,} ({(y_train == 1).mean()*100:.2f}%)")
-#         print(f"  Imbalance ratio: {(y_train == 0).sum()/(y_train == 1).sum():.1f}:1")
-        
-#         if strategy == 'smote':
-#             # JUSTIFICATION: SMOTE creates synthetic minority samples
-#             # Good when we have enough data and want to preserve all majority samples
-#             sampler = SMOTE(
-#                 sampling_strategy='auto',  # Balance classes to 1:1
-#                 random_state=self.random_state,
-#                 k_neighbors=5
-#             )
-#             justification = """
-#             JUSTIFICATION FOR SMOTE:
-#             1. Creates synthetic minority samples rather than discarding data
-#             2. Preserves all majority class information
-#             3. Helps prevent overfitting to majority class
-#             4. Good for tree-based models that we'll likely use
-#             """
+        Args:
+            df (pd.DataFrame): Input dataframe
+            target_col (str): Target column name
+            test_size (float): Test set proportion
+            stratify (bool): Whether to stratify by target
             
-#         elif strategy == 'undersample':
-#             # JUSTIFICATION: Random undersampling reduces majority class
-#             # Good when computational efficiency is important
-#             sampler = RandomUnderSampler(
-#                 sampling_strategy='auto',
-#                 random_state=self.random_state
-#             )
-#             justification = """
-#             JUSTIFICATION FOR UNDERSAMPLING:
-#             1. Reduces computational cost
-#             2. Avoids creating synthetic data (more "real")
-#             3. Good when dataset is very large
-#             4. Simpler and faster
-#             """
+        Returns:
+            tuple: X_train, X_test, y_train, y_test
+        """
+        if self.verbose:
+            print("\n" + "="*60)
+            print("STRATIFIED TRAIN-TEST SPLIT")
+            print("="*60)
+            print("Justification: Preserve class distribution in both sets")
         
-#         elif strategy == 'combined':
-#             # JUSTIFICATION: Combination of over and under sampling
-#             # Good for severe imbalance
-#             over = SMOTE(sampling_strategy=0.5, random_state=self.random_state)
-#             under = RandomUnderSampler(sampling_strategy=0.8, random_state=self.random_state)
-#             sampler = ImbPipeline([
-#                 ('over', over),
-#                 ('under', under)
-#             ])
-#             justification = """
-#             JUSTIFICATION FOR COMBINED APPROACH:
-#             1. Reduces severe imbalance without discarding too much data
-#             2. Creates some synthetic samples while reducing majority
-#             3. Balanced approach for very skewed datasets
-#             """
+        # Separate features and target
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
         
-#         print(justification)
+        # Calculate class distribution
+        class_distribution = y.value_counts(normalize=True)
         
-#         # Apply resampling
-#         X_train_resampled, y_train_resampled = sampler.fit_resample(X_train, y_train)
+        if self.verbose:
+            print(f"Total samples: {len(df):,}")
+            print(f"Features: {X.shape[1]}")
+            print(f"Class distribution:")
+            for cls, pct in class_distribution.items():
+                print(f"  Class {cls}: {pct*100:.2f}% ({y.value_counts()[cls]:,} samples)")
         
-#         # Document AFTER resampling
-#         print("\nAFTER resampling:")
-#         print(f"  Class 0: {(y_train_resampled == 0).sum():,} ({(y_train_resampled == 0).mean()*100:.2f}%)")
-#         print(f"  Class 1: {(y_train_resampled == 1).sum():,} ({(y_train_resampled == 1).mean()*100:.2f}%)")
-#         print(f"  Imbalance ratio: {(y_train_resampled == 0).sum()/(y_train_resampled == 1).sum():.1f}:1")
+        # Perform split
+        if stratify:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, 
+                test_size=test_size, 
+                stratify=y,
+                random_state=self.random_state
+            )
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, 
+                test_size=test_size, 
+                random_state=self.random_state
+            )
         
-#         return X_train_resampled, y_train_resampled, sampler
-    
-#     def preprocess_data(self, X_train: pd.DataFrame, X_test: pd.DataFrame, 
-#                        y_train: pd.Series, y_test: pd.Series, 
-#                        feature_types: dict, balance_strategy: str = 'smote') -> dict:
-#         """Complete preprocessing pipeline."""
-        
-#         print("=== STARTING DATA PREPROCESSING PIPELINE ===")
-        
-#         # 1. Create preprocessing pipeline
-#         preprocessor = self.create_preprocessing_pipeline(feature_types)
-        
-#         # 2. Fit and transform training data
-#         print("\n1. Fitting preprocessing on training data...")
-#         X_train_processed = preprocessor.fit_transform(X_train)
-        
-#         # 3. Transform test data (using training fit)
-#         print("2. Transforming test data...")
-#         X_test_processed = preprocessor.transform(X_test)
-        
-#         # 4. Handle class imbalance (ONLY on training data)
-#         print("\n3. Handling class imbalance...")
-#         X_train_balanced, y_train_balanced, sampler = self.handle_class_imbalance(
-#             pd.DataFrame(X_train_processed, columns=self.get_feature_names(preprocessor)),
-#             y_train,
-#             strategy=balance_strategy
-#         )
-        
-#         # Convert back to DataFrames with feature names
-#         feature_names_out = self.get_feature_names(preprocessor)
-        
-#         results = {
-#             'X_train': pd.DataFrame(X_train_processed, columns=feature_names_out, index=X_train.index),
-#             'X_test': pd.DataFrame(X_test_processed, columns=feature_names_out, index=X_test.index),
-#             'y_train': y_train,
-#             'y_test': y_test,
-#             'X_train_balanced': pd.DataFrame(X_train_balanced, columns=feature_names_out),
-#             'y_train_balanced': y_train_balanced,
-#             'preprocessor': preprocessor,
-#             'sampler': sampler,
-#             'feature_names': feature_names_out
-#         }
-        
-#         print("\n=== PREPROCESSING COMPLETE ===")
-#         print(f"Processed training shape: {results['X_train'].shape}")
-#         print(f"Processed test shape: {results['X_test'].shape}")
-#         print(f"Balanced training shape: {results['X_train_balanced'].shape}")
-        
-#         return results
-    
-#     def get_feature_names(self, preprocessor: ColumnTransformer) -> list:
-#         """Get feature names after preprocessing."""
-#         feature_names = []
-        
-#         for name, transformer, columns in preprocessor.transformers_:
-#             if transformer == 'drop':
-#                 continue
+        if self.verbose:
+            print(f"\n✓ Split completed:")
+            print(f"  Training set: {X_train.shape[0]:,} samples")
+            print(f"  Test set: {X_test.shape[0]:,} samples")
+            print(f"  Train fraud rate: {y_train.mean()*100:.4f}%")
+            print(f"  Test fraud rate: {y_test.mean()*100:.4f}%")
+            
+            # Verify stratification
+            if stratify:
+                train_dist = y_train.value_counts(normalize=True)
+                test_dist = y_test.value_counts(normalize=True)
                 
-#             if hasattr(transformer, 'get_feature_names_out'):
-#                 # For OneHotEncoder
-#                 if name == 'cat':
-#                     feature_names.extend(transformer.named_steps['onehot'].get_feature_names_out(columns))
-#                 else:
-#                     feature_names.extend(columns)
-#             else:
-#                 feature_names.extend(columns)
+                print(f"\n✅ Stratification verified:")
+                print(f"  Original fraud rate: {y.mean()*100:.4f}%")
+                print(f"  Train fraud rate: {train_dist[1]*100:.4f}%")
+                print(f"  Test fraud rate: {test_dist[1]*100:.4f}%")
         
-#         return feature_names
+        self.transformation_report['data_split'] = {
+            'train_samples': X_train.shape[0],
+            'test_samples': X_test.shape[0],
+            'train_fraud_rate': y_train.mean(),
+            'test_fraud_rate': y_test.mean(),
+            'features_count': X.shape[1]
+        }
+        
+        return X_train, X_test, y_train, y_test
+    
+    def normalize_numerical_features(self, X_train: pd.DataFrame, 
+                                     X_test: pd.DataFrame,
+                                     method: str = 'standard') -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Normalize numerical features.
+        
+        Args:
+            X_train (pd.DataFrame): Training features
+            X_test (pd.DataFrame): Test features
+            method (str): 'standard' (z-score) or 'minmax' (0-1)
+            
+        Returns:
+            tuple: Normalized X_train, X_test
+        """
+        if self.verbose:
+            print("\n" + "="*60)
+            print(f"NORMALIZING NUMERICAL FEATURES ({method.upper()})")
+            print("="*60)
+            print("Justification: Bring features to similar scale for better model convergence")
+        
+        X_train_norm = X_train.copy()
+        X_test_norm = X_test.copy()
+        
+        # Identify numerical columns
+        numerical_cols = X_train_norm.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if not numerical_cols:
+            if self.verbose:
+                print("⚠️  No numerical columns found for normalization")
+            return X_train_norm, X_test_norm
+        
+        if self.verbose:
+            print(f"Normalizing {len(numerical_cols)} numerical columns")
+        
+        # Initialize scaler
+        if method == 'standard':
+            self.scaler = StandardScaler()
+            scaler_name = 'StandardScaler (z-score normalization)'
+        elif method == 'minmax':
+            self.scaler = MinMaxScaler()
+            scaler_name = 'MinMaxScaler (0-1 normalization)'
+        else:
+            raise ValueError(f"Unknown normalization method: {method}")
+        
+        # Fit on training data and transform both sets
+        X_train_norm[numerical_cols] = self.scaler.fit_transform(X_train_norm[numerical_cols])
+        X_test_norm[numerical_cols] = self.scaler.transform(X_test_norm[numerical_cols])
+        
+        if self.verbose:
+            print(f"✓ Applied {scaler_name}")
+            print(f"  Training statistics after normalization:")
+            print(f"    Mean ~ 0, Std ~ 1 for StandardScaler")
+            print(f"    Range 0-1 for MinMaxScaler")
+            
+            # Show example statistics
+            sample_col = numerical_cols[0]
+            print(f"\n  Example column '{sample_col}':")
+            print(f"    Train mean: {X_train_norm[sample_col].mean():.4f}")
+            print(f"    Train std: {X_train_norm[sample_col].std():.4f}")
+            print(f"    Train min: {X_train_norm[sample_col].min():.4f}")
+            print(f"    Train max: {X_train_norm[sample_col].max():.4f}")
+        
+        self.transformation_report['normalization'] = {
+            'method': method,
+            'numerical_columns': numerical_cols,
+            'scaler_type': scaler_name
+        }
+        
+        return X_train_norm, X_test_norm
+    
+    def encode_categorical_features(self, X_train: pd.DataFrame, 
+                                    X_test: pd.DataFrame,
+                                    method: str = 'label',
+                                    max_categories: int = 20) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Encode categorical features.
+        
+        Args:
+            X_train (pd.DataFrame): Training features
+            X_test (pd.DataFrame): Test features
+            method (str): 'label' or 'onehot'
+            max_categories (int): Max unique values for one-hot encoding
+            
+        Returns:
+            tuple: Encoded X_train, X_test
+        """
+        if self.verbose:
+            print("\n" + "="*60)
+            print(f"ENCODING CATEGORICAL FEATURES ({method.upper()})")
+            print("="*60)
+            print("Justification: Convert categorical data to numerical format for ML algorithms")
+        
+        X_train_encoded = X_train.copy()
+        X_test_encoded = X_test.copy()
+        
+        # Identify categorical columns
+        categorical_cols = X_train_encoded.select_dtypes(
+            include=['object', 'category']
+        ).columns.tolist()
+        
+        if not categorical_cols:
+            if self.verbose:
+                print("✓ No categorical columns found")
+            return X_train_encoded, X_test_encoded
+        
+        if self.verbose:
+            print(f"Found {len(categorical_cols)} categorical columns:")
+            for col in categorical_cols:
+                unique_count = X_train_encoded[col].nunique()
+                print(f"  {col}: {unique_count} unique values")
+        
+        if method == 'label':
+            # Label encoding
+            if self.verbose:
+                print("\n🔤 Applying Label Encoding...")
+            
+            for col in categorical_cols:
+                # Initialize label encoder
+                le = LabelEncoder()
+                
+                # Fit on training data
+                X_train_encoded[col] = le.fit_transform(X_train_encoded[col].astype(str))
+                
+                # Transform test data, handling unseen categories
+                X_test_encoded[col] = X_test_encoded[col].apply(
+                    lambda x: le.transform([x])[0] if x in le.classes_ else -1
+                )
+                
+                # Store encoder
+                self.label_encoders[col] = le
+            
+            if self.verbose:
+                print(f"✓ Applied label encoding to {len(categorical_cols)} columns")
+        
+        elif method == 'onehot':
+            # One-hot encoding for low-cardinality columns
+            if self.verbose:
+                print("\n🎯 Applying One-Hot Encoding (for columns with ≤ {max_categories} categories)...")
+            
+            # Identify columns suitable for one-hot encoding
+            onehot_cols = []
+            label_cols = []
+            
+            for col in categorical_cols:
+                unique_count = X_train_encoded[col].nunique()
+                if unique_count <= max_categories:
+                    onehot_cols.append(col)
+                else:
+                    label_cols.append(col)
+            
+            if onehot_cols:
+                if self.verbose:
+                    print(f"  One-hot encoding {len(onehot_cols)} columns:")
+                    for col in onehot_cols:
+                        print(f"    {col}: {X_train_encoded[col].nunique()} categories")
+                
+                # Apply one-hot encoding
+                X_train_encoded = pd.get_dummies(X_train_encoded, columns=onehot_cols, 
+                                                prefix=onehot_cols, drop_first=True)
+                X_test_encoded = pd.get_dummies(X_test_encoded, columns=onehot_cols, 
+                                               prefix=onehot_cols, drop_first=True)
+                
+                # Align columns (test might have missing categories)
+                X_test_encoded = X_test_encoded.reindex(columns=X_train_encoded.columns, 
+                                                       fill_value=0)
+                
+                self.onehot_columns = onehot_cols
+            
+            # Apply label encoding to high-cardinality columns
+            if label_cols:
+                if self.verbose:
+                    print(f"\n  Label encoding {len(label_cols)} high-cardinality columns:")
+                    for col in label_cols:
+                        print(f"    {col}: {X_train_encoded[col].nunique()} categories")
+                
+                for col in label_cols:
+                    le = LabelEncoder()
+                    X_train_encoded[col] = le.fit_transform(X_train_encoded[col].astype(str))
+                    X_test_encoded[col] = X_test_encoded[col].apply(
+                        lambda x: le.transform([x])[0] if x in le.classes_ else -1
+                    )
+                    self.label_encoders[col] = le
+        
+        else:
+            raise ValueError(f"Unknown encoding method: {method}")
+        
+        if self.verbose:
+            print(f"\n✅ Encoding completed")
+            print(f"  Total features after encoding: {X_train_encoded.shape[1]}")
+            print(f"  Feature increase: {X_train_encoded.shape[1] - X_train.shape[1]} columns")
+        
+        self.transformation_report['encoding'] = {
+            'method': method,
+            'categorical_columns': categorical_cols,
+            'onehot_columns': self.onehot_columns if method == 'onehot' else [],
+            'label_encoded_columns': list(self.label_encoders.keys()),
+            'total_features_after_encoding': X_train_encoded.shape[1]
+        }
+        
+        return X_train_encoded, X_test_encoded
+    
+    def handle_class_imbalance(self, X_train: pd.DataFrame, y_train: pd.Series,
+                              method: str = 'smote',
+                              sampling_strategy: float = 0.5) -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Handle class imbalance using sampling techniques.
+        
+        Args:
+            X_train (pd.DataFrame): Training features
+            y_train (pd.Series): Training target
+            method (str): 'smote', 'undersample', or 'oversample'
+            sampling_strategy (float): Desired ratio of minority to majority class
+            
+        Returns:
+            tuple: Resampled X_train, y_train
+        """
+        if self.verbose:
+            print("\n" + "="*60)
+            print(f"HANDLING CLASS IMBALANCE ({method.upper()})")
+            print("="*60)
+            
+            # Document justification
+            justifications = {
+                'smote': "SMOTE creates synthetic samples, preserving information while balancing classes",
+                'undersample': "Undersampling reduces majority class, risk of information loss but faster",
+                'oversample': "Oversampling duplicates minority class, simple but can cause overfitting"
+            }
+            
+            print(f"Justification: {justifications.get(method, 'Custom sampling strategy')}")
+        
+        # Analyze class distribution before
+        class_counts_before = y_train.value_counts()
+        class_pct_before = y_train.value_counts(normalize=True) * 100
+        
+        if self.verbose:
+            print(f"\n📊 Class distribution BEFORE resampling:")
+            for cls in sorted(class_counts_before.index):
+                print(f"  Class {cls}: {class_counts_before[cls]:,} samples "
+                      f"({class_pct_before[cls]:.2f}%)")
+            
+            imbalance_ratio = class_counts_before[0] / class_counts_before[1]
+            print(f"  Imbalance ratio: {imbalance_ratio:.2f}:1")
+        
+        X_resampled, y_resampled = X_train.copy(), y_train.copy()
+        
+        try:
+            if method == 'smote':
+                # Apply SMOTE
+                smote = SMOTE(
+                    sampling_strategy=sampling_strategy,
+                    random_state=self.random_state,
+                    k_neighbors=5
+                )
+                X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+                method_name = "SMOTE (Synthetic Minority Over-sampling Technique)"
+                
+            elif method == 'undersample':
+                # Apply random undersampling
+                undersampler = RandomUnderSampler(
+                    sampling_strategy=sampling_strategy,
+                    random_state=self.random_state
+                )
+                X_resampled, y_resampled = undersampler.fit_resample(X_train, y_train)
+                method_name = "Random Undersampling"
+                
+            elif method == 'oversample':
+                # Apply random oversampling
+                from imblearn.over_sampling import RandomOverSampler
+                oversampler = RandomOverSampler(
+                    sampling_strategy=sampling_strategy,
+                    random_state=self.random_state
+                )
+                X_resampled, y_resampled = oversampler.fit_resample(X_train, y_train)
+                method_name = "Random Oversampling"
+                
+            else:
+                raise ValueError(f"Unknown imbalance handling method: {method}")
+            
+            # Analyze class distribution after
+            class_counts_after = y_resampled.value_counts()
+            class_pct_after = y_resampled.value_counts(normalize=True) * 100
+            
+            if self.verbose:
+                print(f"\n✅ Applied {method_name}")
+                print(f"\n📊 Class distribution AFTER resampling:")
+                for cls in sorted(class_counts_after.index):
+                    print(f"  Class {cls}: {class_counts_after[cls]:,} samples "
+                          f"({class_pct_after[cls]:.2f}%)")
+                
+                print(f"\n📈 Resampling statistics:")
+                print(f"  Samples added/removed: {len(X_resampled) - len(X_train):,}")
+                print(f"  Final training size: {len(X_resampled):,}")
+                print(f"  Minority class increase: "
+                      f"{((class_counts_after[1] - class_counts_before[1]) / class_counts_before[1] * 100):.1f}%")
+                
+                # Visualize class distribution
+                import matplotlib.pyplot as plt
+                
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                
+                # Before resampling
+                ax1.bar(['Legitimate', 'Fraud'], class_counts_before.values, 
+                       color=['#2ecc71', '#e74c3c'])
+                ax1.set_title('Class Distribution - BEFORE', fontsize=12, fontweight='bold')
+                ax1.set_ylabel('Count', fontsize=10)
+                for i, count in enumerate(class_counts_before.values):
+                    ax1.text(i, count + count*0.01, f'{count:,}', 
+                            ha='center', va='bottom', fontsize=9)
+                
+                # After resampling
+                ax2.bar(['Legitimate', 'Fraud'], class_counts_after.values,
+                       color=['#2ecc71', '#e74c3c'])
+                ax2.set_title('Class Distribution - AFTER', fontsize=12, fontweight='bold')
+                ax2.set_ylabel('Count', fontsize=10)
+                for i, count in enumerate(class_counts_after.values):
+                    ax2.text(i, count + count*0.01, f'{count:,}', 
+                            ha='center', va='bottom', fontsize=9)
+                
+                plt.tight_layout()
+                plt.show()
+            
+            # Store transformation report
+            self.transformation_report['imbalance_handling'] = {
+                'method': method,
+                'method_name': method_name,
+                'sampling_strategy': sampling_strategy,
+                'before_counts': class_counts_before.to_dict(),
+                'after_counts': class_counts_after.to_dict(),
+                'before_percentages': class_pct_before.to_dict(),
+                'after_percentages': class_pct_after.to_dict(),
+                'samples_added_removed': len(X_resampled) - len(X_train)
+            }
+            
+            return X_resampled, y_resampled
+            
+        except Exception as e:
+            print(f"✗ Error in imbalance handling: {e}")
+            print("⚠️  Returning original data")
+            return X_train, y_train
+    
+    def full_pipeline(self, df: pd.DataFrame,
+                      target_col: str = 'class',
+                      normalize_method: str = 'standard',
+                      encode_method: str = 'label',
+                      imbalance_method: str = 'smote',
+                      test_size: float = 0.2) -> Dict[str, Any]:
+        """
+        Run complete data transformation pipeline.
+        
+        Args:
+            df (pd.DataFrame): Input dataframe
+            target_col (str): Target column name
+            normalize_method (str): Normalization method
+            encode_method (str): Encoding method
+            imbalance_method (str): Imbalance handling method
+            test_size (float): Test set proportion
+            
+        Returns:
+            dict: Transformed data and transformers
+        """
+        if self.verbose:
+            print("\n" + "="*80)
+            print("COMPLETE DATA TRANSFORMATION PIPELINE")
+            print("="*80)
+            print("Step 1: Train-test split (stratified)")
+            print("Step 2: Categorical feature encoding")
+            print("Step 3: Numerical feature normalization")
+            print("Step 4: Class imbalance handling (training set only)")
+        
+        # Step 1: Split data
+        X_train, X_test, y_train, y_test = self.split_data(
+            df, target_col=target_col, test_size=test_size
+        )
+        
+        # Step 2: Encode categorical features
+        X_train_encoded, X_test_encoded = self.encode_categorical_features(
+            X_train, X_test, method=encode_method
+        )
+        
+        # Step 3: Normalize numerical features
+        X_train_normalized, X_test_normalized = self.normalize_numerical_features(
+            X_train_encoded, X_test_encoded, method=normalize_method
+        )
+        
+        # Step 4: Handle class imbalance (only on training data)
+        X_train_balanced, y_train_balanced = self.handle_class_imbalance(
+            X_train_normalized, y_train, method=imbalance_method
+        )
+        
+        if self.verbose:
+            print("\n" + "="*80)
+            print("PIPELINE COMPLETED SUCCESSFULLY")
+            print("="*80)
+            print(f"✓ Final dataset shapes:")
+            print(f"  X_train: {X_train_balanced.shape}")
+            print(f"  X_test: {X_test_normalized.shape}")
+            print(f"  y_train: {y_train_balanced.shape}")
+            print(f"  y_test: {y_test.shape}")
+            print(f"\n✓ Features after transformation: {X_train_balanced.shape[1]}")
+            print(f"✓ Class balance achieved: {y_train_balanced.mean()*100:.2f}% fraud in training")
+        
+        return {
+            'X_train': X_train_balanced,
+            'X_test': X_test_normalized,
+            'y_train': y_train_balanced,
+            'y_test': y_test,
+            'transformers': {
+                'scaler': self.scaler,
+                'label_encoders': self.label_encoders,
+                'onehot_columns': self.onehot_columns
+            },
+            'report': self.transformation_report
+        }
+    
+    def get_transformation_report(self) -> Dict[str, Any]:
+        """
+        Get comprehensive transformation report.
+        
+        Returns:
+            dict: Transformation statistics and metrics
+        """
+        return self.transformation_report
