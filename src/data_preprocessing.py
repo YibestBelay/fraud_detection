@@ -1,92 +1,177 @@
+
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.utils import resample
 import warnings
 warnings.filterwarnings('ignore')
 
+
 class FraudDataPreprocessor:
-    def __init__(self, data_path):
-        self.df = pd.read_csv(data_path)
-        self.original_shape = self.df.shape
-        
-        # Standardize critical ID columns as strings immediately
-        id_cols = ['user_id', 'device_id']
-        for col in id_cols:
-            if col in self.df.columns:
-                self.df[col] = self.df[col].astype(str)
-        
-    def clean_data(self):
-        """Execute complete cleaning pipeline"""
-        self._convert_dtypes()
-        self._handle_missing_values()
-        self._remove_duplicates()
-        self._validate_cleaning()
-        return self.df
+    """
+    Preprocess fraud detection datasets with handling for imbalanced data.
+    """
     
-    def _convert_dtypes(self):
-        """Convert columns to correct data types"""
-        # Time columns
-        self.df['signup_time'] = pd.to_datetime(self.df['signup_time'], errors='coerce')
-        self.df['purchase_time'] = pd.to_datetime(self.df['purchase_time'], errors='coerce')
+    def __init__(self, random_state=42):
+        """
+        Initialize preprocessor.
         
-        # Numerical
-        self.df['purchase_value'] = pd.to_numeric(self.df['purchase_value'], errors='coerce')
-        self.df['age'] = pd.to_numeric(self.df['age'], errors='coerce')
+        Args:
+            random_state (int): Random seed for reproducibility
+        """
+        self.random_state = random_state
+        self.scaler = StandardScaler()
+        self.feature_columns = None
+        self.target_column = None
         
-        # Categorical-like (as string, not category)
-        for col in ['source', 'browser', 'sex', 'ip_address']:
-            if col in self.df.columns:
-                self.df[col] = self.df[col].astype(str)
+    def load_data(self, filepath, dataset_type='creditcard'):
+        """
+        Load fraud detection dataset.
         
-        print("✓ Data types converted: datetime, numeric, and string (not categorical)")
+        Args:
+            filepath (str): Path to data file
+            dataset_type (str): 'creditcard' or 'fraud_data'
+            
+        Returns:
+            pandas.DataFrame: Loaded dataframe
+        """
+        try:
+            df = pd.read_csv(filepath)
+            print(f"Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+            
+            if dataset_type == 'creditcard':
+                self.target_column = 'Class'
+                # CreditCard dataset already has anonymized features
+                if 'Time' in df.columns:
+                    df['Hour'] = df['Time'] % 24
+                    df = df.drop(['Time'], axis=1)
+                    
+            elif dataset_type == 'fraud_data':
+                self.target_column = 'class'
+                # Basic preprocessing for Fraud_Data
+                if 'purchase_time' in df.columns:
+                    df['purchase_hour'] = pd.to_datetime(df['purchase_time']).dt.hour
+                    df = df.drop(['purchase_time'], axis=1)
+            
+            print(f"Target column: {self.target_column}")
+            print(f"Class distribution:\n{df[self.target_column].value_counts()}")
+            print(f"Fraud percentage: {df[self.target_column].mean()*100:.2f}%")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            raise
     
-    def _handle_missing_values(self):
-        """Handle missing values"""
-        missing_report = self.df.isnull().sum()
-        if missing_report.sum() > 0:
-            print(f"Missing values before treatment:\n{missing_report[missing_report > 0]}")
+    def prepare_features(self, df):
+        """
+        Separate features and target, handle missing values.
         
-        # Drop rows with missing critical timestamps
-        time_mask = self.df[['signup_time', 'purchase_time']].isnull().any(axis=1)
-        self.df = self.df[~time_mask].copy()
+        Args:
+            df (pandas.DataFrame): Input dataframe
+            
+        Returns:
+            tuple: (X, y) features and target
+        """
+        # Identify feature columns
+        self.feature_columns = [col for col in df.columns if col != self.target_column]
         
-        # Numerical imputation
-        self.df['purchase_value'].fillna(self.df['purchase_value'].median(), inplace=True)
-        self.df['age'].fillna(self.df['age'].mode()[0], inplace=True)
+        X = df[self.feature_columns].copy()
+        y = df[self.target_column].copy()
         
-        # Categorical: replace 'nan' string and fill
-        for col in ['source', 'browser', 'sex', 'ip_address']:
-            if col in self.df.columns:
-                self.df[col].replace('nan', 'Unknown', inplace=True)
-                self.df[col].fillna('Unknown', inplace=True)
+        # Handle missing values
+        if X.isnull().sum().sum() > 0:
+            print(f"Missing values found: {X.isnull().sum().sum()}")
+            X = X.fillna(X.median())
         
-        print("✓ Missing values handled")
+        print(f"Features shape: {X.shape}, Target shape: {y.shape}")
+        return X, y
     
-    def _remove_duplicates(self):
-        """Remove duplicates"""
-        initial = len(self.df)
-        self.df.drop_duplicates(inplace=True)
+    def split_data(self, X, y, test_size=0.2):
+        """
+        Perform stratified train-test split.
         
-        # Near-duplicates: same user/device/value within 60 sec
-        self.df.sort_values(['user_id', 'purchase_time'], inplace=True, ignore_index=True)
-        time_diff = self.df.groupby('user_id')['purchase_time'].diff().dt.total_seconds()
-        near_dup = (
-            self.df.duplicated(subset=['user_id', 'device_id', 'purchase_value'], keep='first') &
-            (time_diff < 60)
+        Args:
+            X (pandas.DataFrame/numpy.ndarray): Features
+            y (pandas.Series/numpy.ndarray): Target
+            test_size (float): Test set proportion
+            
+        Returns:
+            tuple: X_train, X_test, y_train, y_test
+        """
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, 
+            test_size=test_size, 
+            stratify=y,
+            random_state=self.random_state
         )
-        self.df = self.df[~near_dup].reset_index(drop=True)
         
-        removed = initial - len(self.df)
-        print(f"✓ Duplicates removed: {removed} records ({removed/initial:.1%})")
+        print(f"Training set: {X_train.shape}, Test set: {X_test.shape}")
+        print(f"Train fraud rate: {y_train.mean():.4f}")
+        print(f"Test fraud rate: {y_test.mean():.4f}")
+        
+        return X_train, X_test, y_train, y_test
     
-    def _validate_cleaning(self):
-        """Validation report"""
-        print("\n" + "="*50)
-        print("CLEANING VALIDATION REPORT")
-        print("="*50)
-        print(f"Original shape: {self.original_shape}")
-        print(f"Final shape: {self.df.shape}")
-        print(f"Records removed: {self.original_shape[0] - self.df.shape[0]}")
-        print(f"Missing values remaining: {self.df.isnull().sum().sum()}")
-        print(f"Duplicate rows remaining: {self.df.duplicated().sum()}")
-        print("="*50)
+    def scale_features(self, X_train, X_test):
+        """
+        Scale features using StandardScaler.
+        
+        Args:
+            X_train (pandas.DataFrame/numpy.ndarray): Training features
+            X_test (pandas.DataFrame/numpy.ndarray): Test features
+            
+        Returns:
+            tuple: Scaled X_train, X_test
+        """
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        print("Features scaled using StandardScaler")
+        return X_train_scaled, X_test_scaled
+    
+    def handle_imbalance(self, X_train, y_train, method='undersample'):
+        """
+        Handle class imbalance using sampling techniques.
+        
+        Args:
+            X_train (numpy.ndarray): Training features
+            y_train (numpy.ndarray): Training target
+            method (str): 'undersample', 'oversample', or 'smote'
+            
+        Returns:
+            tuple: Resampled X_train, y_train
+        """
+        from imblearn.under_sampling import RandomUnderSampler
+        from imblearn.over_sampling import RandomOverSampler, SMOTE
+        
+        print(f"\nOriginal class distribution:")
+        unique, counts = np.unique(y_train, return_counts=True)
+        for cls, cnt in zip(unique, counts):
+            print(f"  Class {cls}: {cnt} samples ({cnt/len(y_train)*100:.2f}%)")
+        
+        if method == 'undersample':
+            sampler = RandomUnderSampler(random_state=self.random_state)
+            X_resampled, y_resampled = sampler.fit_resample(X_train, y_train)
+            print("Applied RandomUnderSampling")
+            
+        elif method == 'oversample':
+            sampler = RandomOverSampler(random_state=self.random_state)
+            X_resampled, y_resampled = sampler.fit_resample(X_train, y_train)
+            print("Applied RandomOverSampling")
+            
+        elif method == 'smote':
+            sampler = SMOTE(random_state=self.random_state)
+            X_resampled, y_resampled = sampler.fit_resample(X_train, y_train)
+            print("Applied SMOTE")
+            
+        else:
+            print("No resampling applied")
+            return X_train, y_train
+        
+        print(f"Resampled class distribution:")
+        unique, counts = np.unique(y_resampled, return_counts=True)
+        for cls, cnt in zip(unique, counts):
+            print(f"  Class {cls}: {cnt} samples ({cnt/len(y_resampled)*100:.2f}%)")
+        
+        return X_resampled, y_resampled
